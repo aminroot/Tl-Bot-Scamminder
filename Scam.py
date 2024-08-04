@@ -1,54 +1,90 @@
+import telebot
+import imgkit
+import nest_asyncio
+from google.colab import files
+import cv2  # OpenCV برای پردازش تصویر
+import pytesseract
+from pytesseract import Output
 
-!pip install selenium opencv-python pytesseract pillow
+# تنظیم حلقه رویداد برای رفع خطای RuntimeError
+nest_asyncio.apply()
 
+# تنظیمات تلگرام
+TELEGRAM_TOKEN = '7375087926:AAEFvme2mywrVfY7HHxA_qSoPY6CdFA4Erg'  # توکن ربات تلگرام خود را وارد کنید
+bot = telebot.TeleBot(TELEGRAM_TOKEN)
 
-import json
-import os
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service as ChromeService
-from selenium.webdriver.common.by import By
-from selenium.webdriver.chrome.options import Options
-import cv2
-import pytesseract
-from PIL import Image
+def take_screenshot(url, path):
+    options = {'format': 'png'}
+    imgkit.from_url(url, path, options=options)
 
-# بارگذاری تنظیمات از فایل JSON
-with open('config.json') as config_file:
-    config = json.load(config_file)
+def split_image(image_path):
+    # بارگذاری تصویر با استفاده از OpenCV
+    image = cv2.imread(image_path)
+    height, width, _ = image.shape
 
-TELEGRAM_TOKEN = config['telegram_token']
+    # تقسیم تصویر به چهار قسمت افقی
+    section_height = height // 4
+    top_section = image[:section_height, :]
+    upper_middle_section = image[section_height:2*section_height, :]
+    lower_middle_section = image[2*section_height:3*section_height, :]
+    bottom_section = image[3*section_height:, :]
 
-# پیکربندی Selenium
-chrome_options = Options()
-chrome_options.add_argument("--headless")  # اجرای بدون رابط گرافیکی
-chrome_service = ChromeService(executable_path='/path/to/chromedriver')  # مسیر به chromedriver
+    # مسیر ذخیره تصاویر
+    top_section_path = 'top_section.png'
+    upper_middle_section_path = 'upper_middle_section.png'
+    lower_middle_section_path = 'lower_middle_section.png'
+    bottom_section_path = 'bottom_section.png'
 
-def take_screenshot(url, output_path):
-    driver = webdriver.Chrome(service=chrome_service, options=chrome_options)
-    try:
-        driver.get(url)
-        screenshot = driver.get_screenshot_as_base64()
-        with open(output_path, 'wb') as f:
-            f.write(screenshot.decode('base64'))
-    finally:
-        driver.quit()
+    # ذخیره تصاویر به فایل‌های جداگانه با فرمت PNG
+    cv2.imwrite(top_section_path, top_section, [cv2.IMWRITE_PNG_COMPRESSION, 0])
+    cv2.imwrite(upper_middle_section_path, upper_middle_section, [cv2.IMWRITE_PNG_COMPRESSION, 0])
+    cv2.imwrite(lower_middle_section_path, lower_middle_section, [cv2.IMWRITE_PNG_COMPRESSION, 0])
+    cv2.imwrite(bottom_section_path, bottom_section, [cv2.IMWRITE_PNG_COMPRESSION, 0])
 
-def split_image(image_path):
-    image = cv2.imread(image_path)
-    height, width, _ = image.shape
-    section_height = height // 4
+    return top_section_path, upper_middle_section_path, lower_middle_section_path, bottom_section_path
 
-    top_section = image[0:section_height, 0:width]
-    upper_middle_section = image[section_height:section_height*2, 0:width]
-    lower_middle_section = image[section_height*2:section_height*3, 0:width]
-    bottom_section = image[section_height*3:, 0:width]
+def extract_text_from_image(image_path):
+    # بارگذاری تصویر
+    image = cv2.imread(image_path)
+    # استفاده از Tesseract برای استخراج متن
+    text = pytesseract.image_to_string(image, lang='eng')
+    return text
 
-    cv2.imwrite('top_section.png', top_section)
-    cv2.imwrite('upper_middle_section.png', upper_middle_section)
-    cv2.imwrite('lower_middle_section.png', lower_middle_section)
-    cv2.imwrite('bottom_section.png', bottom_section)
+# دستور /start
+@bot.message_handler(commands=['start'])
+def send_welcome(message):
+    bot.reply_to(message, "سلام! برای چک کردن سایت، دستور /check <نام سایت> را ارسال کنید.")
 
-# استفاده از پایتون برای پردازش تصویر
-def process_image_with_ocr(image_path):
-    text = pytesseract.image_to_string(Image.open(image_path))
-    return text
+# دستور /check با ورودی از کاربر
+@bot.message_handler(commands=['check'])
+def check_website(message):
+    try:
+        website = message.text.split()[1]  # گرفتن ورودی کاربر
+        url = f'https://scamminder.com/websites/{website}/'
+        screenshot_path = f'{website}_screenshot.png'
+        take_screenshot(url, screenshot_path)
+        
+        # تقسیم تصویر به چهار قسمت افقی
+        top_section_path, upper_middle_section_path, lower_middle_section_path, bottom_section_path = split_image(screenshot_path)
+        
+        # ارسال تکه‌های تصویر به تلگرام همراه با متن استخراج شده
+        for section_path, caption in zip(
+            [top_section_path, upper_middle_section_path, lower_middle_section_path, bottom_section_path],
+            ["قسمت بالایی 1", "قسمت بالایی 2", "قسمت پایینی 1", "قسمت پایینی 2"]
+        ):
+            with open(section_path, 'rb') as section_photo:
+                bot.send_photo(message.chat.id, section_photo, caption=caption)
+            
+            # استخراج و ارسال متن زیر تصویر
+            text = extract_text_from_image(section_path)
+            bot.send_message(message.chat.id, f"متن استخراج شده: {text}")
+        
+        # آپلود فایل به Google Colab
+        files.download(screenshot_path)
+    except IndexError:
+        bot.reply_to(message, "لطفاً نام سایت را بعد از دستور /check وارد کنید.")
+    except Exception as e:
+        bot.reply_to(message, f"خطایی رخ داده است: {e}")
+
+# راه‌اندازی ربات
+bot.polling()
